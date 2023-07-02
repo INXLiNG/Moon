@@ -1,8 +1,11 @@
 pub const UNICODE = true;
 
-const mem = @import("std").mem;
-const print = @import("std").debug.print;
+// Imports
+
+const mem =    @import("std").mem;
+const print =  @import("std").debug.print;
 const WINAPI = @import("std").os.windows.WINAPI;
+
 const gl = @import("gl");
 
 const win32 = struct {
@@ -15,7 +18,7 @@ const win32 = struct {
     usingnamespace @import("win32").graphics.gdi;
 };
 
-// Constants that zigwin32/zigopengl doesn't provide
+// Constants that zigwin32/zig-opengl doesn't provide
 
 const WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB = 0x2092;
@@ -33,7 +36,6 @@ const WGL_STENCIL_BITS_ARB = 0x2023;
 const WGL_FULL_ACCELERATION_ARB = 0x2027;
 const WGL_TYPE_RGBA_ARB = 0x202B;
 
-const class_name = win32.L("MOON");
 var gl_library: win32.HINSTANCE = undefined;
 
 fn get_string(s: u32) [:0]const u8 {
@@ -67,7 +69,11 @@ fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*an
 }
 
 pub fn main() !void {
+    // Window creation
+
     const module_handle = win32.GetModuleHandle(null) orelse unreachable;
+    const class_name = win32.L("MOON");
+
     const window_class = win32.WNDCLASSEX{
         .style = win32.WNDCLASS_STYLES.initFlags(.{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 }),
         .lpfnWndProc = win32_callback,
@@ -83,11 +89,9 @@ pub fn main() !void {
         .hIconSm = null,
     };
     if (win32.RegisterClassEx(&window_class) == 0) {
-        // TODO: Handle error
+        return error.WindowCreationFailed;
     }
 
-    // window creation
-    // TODO: create an options struct maybe?
     var rect = win32.RECT{ .left = 0, .top = 0, .right = 800, .bottom = 600 };
     _ = win32.AdjustWindowRectEx(&rect, win32.WS_OVERLAPPEDWINDOW, 0, @enumFromInt(0));
     const x = win32.CW_USEDEFAULT;
@@ -100,7 +104,8 @@ pub fn main() !void {
     const handle = win32.CreateWindowEx(@enumFromInt(0), class_name, title, win32.WS_OVERLAPPEDWINDOW, x, y, w, h, null, null, module_handle, null) 
         orelse return error.WindowCreationFailed;
 
-    // WGL context creation
+    // Loading OpenGL
+
     const pfd = win32.PIXELFORMATDESCRIPTOR{
         .nVersion = 1,
         .nSize = @sizeOf(win32.PIXELFORMATDESCRIPTOR),
@@ -176,7 +181,7 @@ pub fn main() !void {
     var format_count: c_uint = undefined;
 
     if (wglChoosePixelFormatARB(hdc, &pfd_attributes, null, 1, @as([*]c_int, @ptrCast(&format)), &format_count) == win32.FALSE or format_count == 0) {
-        // TODO: Handle error
+        return error.InvalidOpenGL;
     }
 
     if (quasi_format != format) {
@@ -194,13 +199,90 @@ pub fn main() !void {
     errdefer _ = win32.wglDeleteContext(context);
 
     if (win32.wglMakeCurrent(hdc, context) == win32.FALSE) {
-        // TODO: handle error
+        return error.InvalidOpenGL;
     }
 
     gl_library = win32.LoadLibrary(win32.L("opengl32.dll")) orelse @panic("Can't find opengl32.dll");
     try gl.load(null, get_proc_address);
 
     _ = win32.ShowWindow(handle, win32.SW_SHOW);
+
+    // Playing with OpenGL
+
+    const vertex_source =
+        \\ #version 410 core
+        \\ layout (location = 0) in vec3 aPos;
+        \\ void main()
+        \\ {
+        \\   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);
+        \\ }
+    ; 
+
+    const fragment_source =
+        \\ #version 410 core
+        \\ out vec4 FragColor;
+        \\ void main() {
+        \\  FragColor = vec4(1.0, 1.0, 0.2, 1.0);   
+        \\ }
+    ;
+
+    var success: c_int = undefined;
+    var shader_log: [512]u8 = [_]u8{0} ** 512;
+    
+    const fragment_shader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragment_shader, 1, @as([*c]const [*c]const u8, @ptrCast(&fragment_source)), null);
+    gl.compileShader(fragment_shader);
+
+    gl.getShaderiv(fragment_shader, gl.COMPILE_STATUS, &success);
+    if (success == 0) {
+        gl.getShaderInfoLog(fragment_shader, 512, 0, &shader_log);
+        print("Shader Error: {s}\n", .{ shader_log });
+    }
+    
+    const vertex_shader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertex_shader, 1, @as([*c]const [*c]const u8, @ptrCast(&vertex_source)), null);
+    gl.compileShader(vertex_shader);
+
+    gl.getShaderiv(vertex_shader, gl.COMPILE_STATUS, &success);
+    if (success == 0) {
+        gl.getShaderInfoLog(vertex_shader, 512, 0, &shader_log);
+        print("Shader Error: {s}\n", .{ shader_log });
+    }
+
+    const shader = gl.createProgram();
+    gl.attachShader(shader, vertex_shader);
+    gl.attachShader(shader, fragment_shader);
+    gl.linkProgram(shader);
+
+    gl.getProgramiv(shader, gl.LINK_STATUS, &success);
+    if (success == 0) {
+        gl.getShaderInfoLog(shader, 512, 0, &shader_log);
+        print("Shader Error: {s}\n", .{ shader_log });
+    }
+
+    gl.deleteShader(vertex_shader);
+    gl.deleteShader(fragment_shader);
+
+    defer gl.deleteProgram(shader);
+
+    const vertices = [9]f32{ -0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0 };
+    var VBO: c_uint = undefined;
+    var VAO: c_uint = undefined;
+
+    gl.genVertexArrays(1, &VAO);
+    defer gl.deleteVertexArrays(1, &VAO);
+
+    gl.genBuffers(1, &VBO);
+    defer gl.deleteBuffers(1, &VBO);
+
+    gl.bindVertexArray(VAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices.len * @sizeOf(f32), &vertices, gl.STATIC_DRAW);
+
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 3 * @sizeOf(f32), null);
+    gl.enableVertexAttribArray(0);
+
+    // Runtime
 
     var running = true;
     while (running) {
@@ -216,6 +298,10 @@ pub fn main() !void {
 
         gl.clearColor(1.0, 0.5, 0.5, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.useProgram(shader);
+        gl.bindVertexArray(VAO);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
 
         _ = win32.SwapBuffers(hdc);
     }
