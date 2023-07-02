@@ -2,44 +2,35 @@ pub const UNICODE = true;
 
 // Imports
 
-const mem =    @import("std").mem;
-const print =  @import("std").debug.print;
-const WINAPI = @import("std").os.windows.WINAPI;
+const std    = @import("std");
+const print  = std.debug.print;
+const WINAPI = std.os.windows.WINAPI;
 
-const gl = @import("gl");
-
-const win32 = struct {
-    usingnamespace @import("win32").zig;
-    usingnamespace @import("win32").foundation;
-    usingnamespace @import("win32").system.system_services;
-    usingnamespace @import("win32").system.library_loader;
-    usingnamespace @import("win32").ui.windows_and_messaging;
-    usingnamespace @import("win32").graphics.open_gl;
-    usingnamespace @import("win32").graphics.gdi;
-};
+const gl    = @import("gl");
+const win32 = @import("win32").everything;
 
 // Constants that zigwin32/zig-opengl doesn't provide
 
-const WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091;
-const WGL_CONTEXT_MINOR_VERSION_ARB = 0x2092;
-const WGL_CONTEXT_PROFILE_MASK_ARB = 0x9126;
-const WGL_CONTEXT_CORE_PROFILE_BIT_ARB = 0x00000001;
+const WGL_CONTEXT_MAJOR_VERSION_ARB     = 0x2091;
+const WGL_CONTEXT_MINOR_VERSION_ARB     = 0x2092;
+const WGL_CONTEXT_PROFILE_MASK_ARB      = 0x9126;
+const WGL_CONTEXT_CORE_PROFILE_BIT_ARB  = 0x00000001;
 
-const WGL_DRAW_TO_WINDOW_ARB = 0x2001;
-const WGL_ACCELERATION_ARB = 0x2003;
-const WGL_SUPPORT_OPENGL_ARB = 0x2010;
-const WGL_DOUBLE_BUFFER_ARB = 0x2011;
-const WGL_PIXEL_TYPE_ARB = 0x2013;
-const WGL_COLOR_BITS_ARB = 0x2014;
-const WGL_DEPTH_BITS_ARB = 0x2022;
-const WGL_STENCIL_BITS_ARB = 0x2023;
-const WGL_FULL_ACCELERATION_ARB = 0x2027;
-const WGL_TYPE_RGBA_ARB = 0x202B;
+const WGL_DRAW_TO_WINDOW_ARB     = 0x2001;
+const WGL_ACCELERATION_ARB       = 0x2003;
+const WGL_SUPPORT_OPENGL_ARB     = 0x2010;
+const WGL_DOUBLE_BUFFER_ARB      = 0x2011;
+const WGL_PIXEL_TYPE_ARB         = 0x2013;
+const WGL_COLOR_BITS_ARB         = 0x2014;
+const WGL_DEPTH_BITS_ARB         = 0x2022;
+const WGL_STENCIL_BITS_ARB       = 0x2023;
+const WGL_FULL_ACCELERATION_ARB  = 0x2027;
+const WGL_TYPE_RGBA_ARB          = 0x202B;
 
 var gl_library: win32.HINSTANCE = undefined;
 
 fn get_string(s: u32) [:0]const u8 {
-    return mem.span(@as([*:0]const u8, @ptrCast(win32.glGetString(s))));
+    return std.mem.span(@as([*:0]const u8, @ptrCast(win32.glGetString(s))));
 }
 
 fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*anyopaque {
@@ -71,13 +62,13 @@ fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*an
 pub fn main() !void {
     // Window creation
 
-    const module_handle = win32.GetModuleHandle(null) orelse unreachable;
+    const module_handle = win32.GetModuleHandleW(null) orelse unreachable;
     const class_name = win32.L("MOON");
 
-    const window_class = win32.WNDCLASSEX{
+    const window_class = win32.WNDCLASSEXW{
         .style = win32.WNDCLASS_STYLES.initFlags(.{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 }),
         .lpfnWndProc = win32_callback,
-        .cbSize = @sizeOf(win32.WNDCLASSEX),
+        .cbSize = @sizeOf(win32.WNDCLASSEXW),
         .cbClsExtra = 0,
         .cbWndExtra = @sizeOf(usize),
         .hInstance = @ptrCast(module_handle),
@@ -88,7 +79,7 @@ pub fn main() !void {
         .lpszClassName = class_name,
         .hIconSm = null,
     };
-    if (win32.RegisterClassEx(&window_class) == 0) {
+    if (win32.RegisterClassExW(&window_class) == 0) {
         return error.WindowCreationFailed;
     }
 
@@ -101,7 +92,7 @@ pub fn main() !void {
 
     const title = win32.L("Moon");
 
-    const handle = win32.CreateWindowEx(@enumFromInt(0), class_name, title, win32.WS_OVERLAPPEDWINDOW, x, y, w, h, null, null, module_handle, null) 
+    const handle = win32.CreateWindowExW(@enumFromInt(0), class_name, title, win32.WS_OVERLAPPEDWINDOW, x, y, w, h, null, null, module_handle, null) 
         orelse return error.WindowCreationFailed;
 
     // Loading OpenGL
@@ -180,7 +171,7 @@ pub fn main() !void {
     var format: c_int = undefined;
     var format_count: c_uint = undefined;
 
-    if (wglChoosePixelFormatARB(hdc, &pfd_attributes, null, 1, @as([*]c_int, @ptrCast(&format)), &format_count) == win32.FALSE or format_count == 0) {
+    if (wglChoosePixelFormatARB(hdc, &pfd_attributes, null, 1, @as([*]c_int, @ptrCast(&format)), &format_count) == 0 or format_count == 0) {
         return error.InvalidOpenGL;
     }
 
@@ -198,11 +189,11 @@ pub fn main() !void {
     const context = wglCreateContextAttribsARB(hdc, null, &context_attributes) orelse return error.InvalidOpenGL;
     errdefer _ = win32.wglDeleteContext(context);
 
-    if (win32.wglMakeCurrent(hdc, context) == win32.FALSE) {
+    if (win32.wglMakeCurrent(hdc, context) == 0) {
         return error.InvalidOpenGL;
     }
 
-    gl_library = win32.LoadLibrary(win32.L("opengl32.dll")) orelse @panic("Can't find opengl32.dll");
+    gl_library = win32.LoadLibraryW(win32.L("opengl32.dll")) orelse @panic("Can't find opengl32.dll");
     try gl.load(null, get_proc_address);
 
     _ = win32.ShowWindow(handle, win32.SW_SHOW);
@@ -287,12 +278,12 @@ pub fn main() !void {
     var running = true;
     while (running) {
         var msg: win32.MSG = undefined;
-        while (win32.PeekMessage(&msg, null, 0, 0, win32.PM_REMOVE) != 0) {
+        while (win32.PeekMessageW(&msg, null, 0, 0, win32.PM_REMOVE) != 0) {
             if (msg.message == win32.WM_QUIT) {
                 running = false;
             } else {
                 _ = win32.TranslateMessage(&msg);
-                _ = win32.DispatchMessage(&msg);
+                _ = win32.DispatchMessageW(&msg);
             }
         }
 
@@ -316,7 +307,7 @@ fn win32_callback(hwnd: win32.HWND, uMsg: u32, wParam: win32.WPARAM, lParam: win
         },
 
         else => {
-            result = win32.DefWindowProc(hwnd, uMsg, wParam, lParam);
+            result = win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
         },
     }
 
