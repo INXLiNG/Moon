@@ -1,0 +1,6 @@
+[submodule "libs/zig-opengl"]
+	path = libs/zig-opengl
+	url = https://github.com/MasterQ32/zig-opengl
+[submodule "libs/zigwin32"]
+	path = libs/zigwin32
+	url = https://github.com/INXLiNG/zigwin32
