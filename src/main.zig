@@ -29,6 +29,102 @@ const WGL_TYPE_RGBA_ARB          = 0x202B;
 
 var gl_library: win32.HINSTANCE = undefined;
 
+const Sound = struct {
+    id: u32,
+    size: u32,
+    buffer: []u8,
+};
+
+const WAVEHeader = packed struct {
+    ckID: u32,
+    cksize: u32,
+    WAVEID: u32,
+};
+
+const WAVEChunkHeader = packed struct {
+    ckID: u32,
+    cksize: u32,
+};
+
+const WAVEfmtChunk = packed struct {
+    wFormatTag: u16,
+    nChannels: u16,
+    nSamplesPerSec: u32,
+    nAvgBytesPerSec: u32,
+    nBlockAlign: u16,
+    wBitsPerSample: u16,
+    cbSize: u16,
+    wValidBitsPerSample: u16,
+    dwChannelMask: u32,
+    subFormat: u128,
+};
+
+const WAVEChunkID = enum(u32) {
+    RIFF = (@as(u32, "R"[0]) << 0) | (@as(u32, "I"[0]) << 8) | (@as(u32, "F"[0]) << 16) | (@as(u32, "F"[0]) << 24),
+    WAVE = (@as(u32, "W"[0]) << 0) | (@as(u32, "A"[0]) << 8) | (@as(u32, "V"[0]) << 16) | (@as(u32, "E"[0]) << 24),
+    fmt  = (@as(u32, "f"[0]) << 0) | (@as(u32, "m"[0]) << 8) | (@as(u32, "t"[0]) << 16) | (@as(u32, " "[0]) << 24),
+    data = (@as(u32, "d"[0]) << 0) | (@as(u32, "a"[0]) << 8) | (@as(u32, "t"[0]) << 16) | (@as(u32, "a"[0]) << 24),
+};
+
+const Audio = struct {
+    allocator: std.mem.Allocator,
+
+    pub fn init(self: *Audio) !void {
+        _ = self;
+
+        // TODO: Initialize XAudio2
+    }
+
+    pub fn load_sound(self: *Audio, path: []const u8) !Sound {
+        // TODO: Generate sound.id based off path 
+        var sound = Sound{ .id = 0, .size = undefined, .buffer = undefined };
+
+        var file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+
+        var file_buffer = try file.readToEndAlloc(self.allocator, (try file.stat()).size);
+        defer self.allocator.free(file_buffer);
+
+        const header: WAVEHeader = @bitCast(file_buffer[0..12].*);
+
+        var start: usize = 12;
+        const end = header.cksize - 4;
+
+        while (start < end) {
+            const chunk: WAVEChunkHeader = @bitCast(file_buffer[start..][0..@sizeOf(WAVEChunkHeader)].*);
+
+            switch (chunk.ckID) {
+                @intFromEnum(WAVEChunkID.fmt) => {
+                    const fmt_chunk: WAVEfmtChunk = @bitCast(file_buffer[start + @sizeOf(WAVEChunkHeader)..][0..@sizeOf(WAVEfmtChunk)].*);
+
+                    // TODO: Check that this is valid
+                    print("wFormatTag: {}\n", .{fmt_chunk.wFormatTag});
+                    print("nSamplesPerSec: {}\n", .{fmt_chunk.nSamplesPerSec});
+                    print("wBitsPerSample: {}\n", .{fmt_chunk.wBitsPerSample});
+                },
+
+                @intFromEnum(WAVEChunkID.data) => {
+                    print("Data chunk found\n", .{});
+
+                    sound.size = chunk.cksize;
+                    sound.buffer = try self.allocator.alloc(u8, sound.size);
+                    std.mem.copy(u8, sound.buffer, file_buffer[start + @sizeOf(WAVEChunkHeader)..]);
+                },
+
+                else => {},
+            }
+
+            start += @sizeOf(WAVEChunkHeader) + ((chunk.cksize + 1) & ~@as(u32, 1));
+        }
+
+        return sound;
+    }
+
+    pub fn unload_sound(self: *Audio, sound: *const Sound) void {
+        self.allocator.free(sound.buffer);
+    }
+};
+
 fn get_string(s: u32) [:0]const u8 {
     return std.mem.span(@as([*:0]const u8, @ptrCast(win32.glGetString(s))));
 }
@@ -60,6 +156,15 @@ fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*an
 }
 
 pub fn main() !void {
+    _ = win32.CoInitializeEx(null, win32.COINIT_MULTITHREADED);
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    var audio = Audio { .allocator = gpa.allocator() };
+    const sound = try audio.load_sound("D:\\projects\\moon\\res\\test_audio.wav");
+    defer audio.unload_sound(&sound);
+
     // Window creation
 
     const module_handle = win32.GetModuleHandleW(null) orelse unreachable;
@@ -294,6 +399,7 @@ pub fn main() !void {
         gl.bindVertexArray(VAO);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+        // TODO: Change this to the WGL extension version (probably)
         _ = win32.SwapBuffers(hdc);
     }
 }
