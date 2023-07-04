@@ -33,6 +33,9 @@ const Sound = struct {
     id: u32,
     size: u32,
     buffer: []u8,
+
+    // TODO: MOVE THIS SOMEWHERE ELSE
+    src: ?*win32.IXAudio2SourceVoice,
 };
 
 const WAVEHeader = packed struct {
@@ -68,16 +71,32 @@ const WAVEChunkID = enum(u32) {
 
 const Audio = struct {
     allocator: std.mem.Allocator,
+    xaudio2: ?*win32.IXAudio2,
+    master: ?*win32.IXAudio2MasteringVoice,
 
-    pub fn init(self: *Audio) !void {
-        _ = self;
+    pub fn init(allocator: std.mem.Allocator) !Audio {
+        var audio: Audio = .{
+            .allocator = allocator,
+            .xaudio2 = undefined,
+            .master = undefined,
+        };
 
         // TODO: Initialize XAudio2
+        if (win32.XAudio2Create(&audio.xaudio2, 0, win32.XAUDIO2_DEFAULT_PROCESSOR) != win32.S_OK) {
+            return error.AudioInitFail;
+        }
+
+        if (win32.IXAudio2.IXAudio2_CreateMasteringVoice(&audio.xaudio2.?.*, &audio.master, win32.XAUDIO2_DEFAULT_CHANNELS,
+        win32.XAUDIO2_DEFAULT_SAMPLERATE, 0, null, null, @enumFromInt(0)) != win32.S_OK) {
+            return error.AudioInitFail;
+        }
+
+        return audio;
     }
 
     pub fn load_sound(self: *Audio, path: []const u8) !Sound {
         // TODO: Generate sound.id based off path 
-        var sound = Sound{ .id = 0, .size = undefined, .buffer = undefined };
+        var sound = Sound{ .id = 0, .size = undefined, .buffer = undefined, .src = undefined, };
 
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -161,7 +180,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var audio = Audio { .allocator = gpa.allocator() };
+    var audio = try Audio.init(gpa.allocator());
     const sound = try audio.load_sound("D:\\projects\\moon\\res\\test_audio.wav");
     defer audio.unload_sound(&sound);
 

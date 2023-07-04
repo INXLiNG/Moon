@@ -18,6 +18,9 @@ pub fn build(b: *std.Build) void {
     exe.addModule("gl", b.createModule(.{
         .source_file = .{ .path = "libs/gl3v3.zig" },
     }));
+
+    exe.linkSystemLibrary("xaudio2_8");
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
