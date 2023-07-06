@@ -86,7 +86,7 @@ const Audio = struct {
             return error.AudioInitFail;
         }
 
-        if (win32.IXAudio2.IXAudio2_CreateMasteringVoice(&audio.xaudio2.?.*, &audio.master, win32.XAUDIO2_DEFAULT_CHANNELS,
+        if (win32.IXAudio2.IXAudio2_CreateMasteringVoice(audio.xaudio2.?, &audio.master, win32.XAUDIO2_DEFAULT_CHANNELS,
         win32.XAUDIO2_DEFAULT_SAMPLERATE, 0, null, null, @enumFromInt(0)) != win32.S_OK) {
             return error.AudioInitFail;
         }
@@ -118,8 +118,11 @@ const Audio = struct {
 
                     // TODO: Check that this is valid
                     print("wFormatTag: {}\n", .{fmt_chunk.wFormatTag});
+                    print("nChannels: {}\n", .{fmt_chunk.nChannels});
                     print("nSamplesPerSec: {}\n", .{fmt_chunk.nSamplesPerSec});
                     print("wBitsPerSample: {}\n", .{fmt_chunk.wBitsPerSample});
+                    print("nBlockAlign: {}\n", .{fmt_chunk.nBlockAlign});
+                    print("nAvgBytesPerSec: {}\n", .{fmt_chunk.nAvgBytesPerSec});
                 },
 
                 @intFromEnum(WAVEChunkID.data) => {
@@ -181,9 +184,37 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     var audio = try Audio.init(gpa.allocator());
-    const sound = try audio.load_sound("D:\\projects\\moon\\res\\test_audio.wav");
+    const sound = try audio.load_sound("D:\\projects\\moon\\res\\test.wav");
     defer audio.unload_sound(&sound);
 
+    const wave_format = win32.WAVEFORMATEX {
+        .wFormatTag = win32.WAVE_FORMAT_PCM,
+        .nChannels = 1,
+        .nSamplesPerSec = 44100,
+        .wBitsPerSample = 16,
+        .nBlockAlign = 2,
+        .nAvgBytesPerSec = 44100 * 2,
+        .cbSize = 0,
+    };
+
+    const buffer = win32.XAUDIO2_BUFFER {
+        .Flags = win32.XAUDIO2_END_OF_STREAM,
+        .AudioBytes = sound.size,
+        .pAudioData = @ptrCast(sound.buffer),
+        .PlayBegin = 0,
+        .PlayLength = 0,
+        .LoopBegin = 0,
+        .LoopLength = 0,
+        .LoopCount = 0,
+        .pContext = null,
+    };
+
+    var src: ?*win32.IXAudio2SourceVoice = undefined;
+    _ = win32.IXAudio2.IXAudio2_CreateSourceVoice(audio.xaudio2.?, &src, &wave_format, 0, 1.0, null, null, null);
+    _ = win32.IXAudio2SourceVoice.IXAudio2SourceVoice_SubmitSourceBuffer(src.?, &buffer, null);
+    _ = win32.IXAudio2Voice.IXAudio2Voice_SetVolume(@ptrCast(src.?), 0.1, 0);
+    _ = win32.IXAudio2SourceVoice.IXAudio2SourceVoice_Start(src.?, 0, 0);
+    
     // Window creation
 
     const module_handle = win32.GetModuleHandleW(null) orelse unreachable;
