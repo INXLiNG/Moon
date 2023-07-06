@@ -2,12 +2,14 @@ pub const UNICODE = true;
 
 // Imports
 
-const std    = @import("std");
+const builtin = @import("builtin");
+const std     = @import("std");
+
 const print  = std.debug.print;
 const WINAPI = std.os.windows.WINAPI;
 
-const gl    = @import("gl");
-const win32 = @import("win32").everything;
+const gl  = @import("gl");
+const w32 = @import("win32").everything;
 
 // Constants that zigwin32/zig-opengl doesn't provide
 
@@ -27,15 +29,35 @@ const WGL_STENCIL_BITS_ARB       = 0x2023;
 const WGL_FULL_ACCELERATION_ARB  = 0x2027;
 const WGL_TYPE_RGBA_ARB          = 0x202B;
 
-var gl_library: win32.HINSTANCE = undefined;
+var gl_library: w32.HINSTANCE = undefined;
+
+const Win32Channel = struct {
+    source: ?*w32.IXAudio2SourceVoice,
+};
+
+const Channel = struct {
+    sound_id: []const u8,
+    platform: switch (builtin.os.tag) {
+        .windows => Win32Channel,
+        else => @panic("Unsupported OS (Channel.platform)"),
+    },
+};
 
 const Sound = struct {
-    id: u32,
+    id: []const u8,
     size: u32,
     buffer: []u8,
 
     // TODO: MOVE THIS SOMEWHERE ELSE
-    src: ?*win32.IXAudio2SourceVoice,
+    src: ?*w32.IXAudio2SourceVoice,
+};
+
+const WAVEFormat = struct {
+    channels: u32,
+    samples_per_second: u32,
+    bits_per_sample: u32,
+    block_align: u32,
+    avg_bytes_per_sec: u32,
 };
 
 const WAVEHeader = packed struct {
@@ -69,34 +91,43 @@ const WAVEChunkID = enum(u32) {
     data = (@as(u32, "d"[0]) << 0) | (@as(u32, "a"[0]) << 8) | (@as(u32, "t"[0]) << 16) | (@as(u32, "a"[0]) << 24),
 };
 
+const Win32Audio = struct {
+    xaudio2: ?*w32.IXAudio2,
+    master: ?*w32.IXAudio2MasteringVoice,
+};
+
 const Audio = struct {
     allocator: std.mem.Allocator,
-    xaudio2: ?*win32.IXAudio2,
-    master: ?*win32.IXAudio2MasteringVoice,
+    platform: switch (builtin.os.tag) {
+        .windows => Win32Audio,
+        else => @panic("Unsupported OS for Audio.platform\n"),
+    },
 
     pub fn init(allocator: std.mem.Allocator) !Audio {
-        var audio: Audio = .{
-            .allocator = allocator,
-            .xaudio2 = undefined,
-            .master = undefined,
-        };
+        var a: Audio = undefined;
+        a.allocator = allocator;
 
-        // TODO: Initialize XAudio2
-        if (win32.XAudio2Create(&audio.xaudio2, 0, win32.XAUDIO2_DEFAULT_PROCESSOR) != win32.S_OK) {
-            return error.AudioInitFail;
+        switch (builtin.os.tag) {
+            .windows => {
+                if (w32.XAudio2Create(&a.platform.xaudio2, 0, w32.XAUDIO2_DEFAULT_PROCESSOR) != w32.S_OK) {
+                    return error.XAudio2InitFail;
+                }
+
+                if (w32.IXAudio2.IXAudio2_CreateMasteringVoice(a.platform.xaudio2.?, &a.platform.master, w32.XAUDIO2_DEFAULT_CHANNELS,
+                    w32.XAUDIO2_DEFAULT_SAMPLERATE, 0, null, null, @enumFromInt(0)) != w32.S_OK) {
+                    return error.XAudio2InitFail;
+                }
+            },
+
+            else => @panic("Unsupported OS"),
         }
 
-        if (win32.IXAudio2.IXAudio2_CreateMasteringVoice(audio.xaudio2.?, &audio.master, win32.XAUDIO2_DEFAULT_CHANNELS,
-        win32.XAUDIO2_DEFAULT_SAMPLERATE, 0, null, null, @enumFromInt(0)) != win32.S_OK) {
-            return error.AudioInitFail;
-        }
-
-        return audio;
+        return a;
     }
 
     pub fn load_sound(self: *Audio, path: []const u8) !Sound {
-        // TODO: Generate sound.id based off path 
-        var sound = Sound{ .id = 0, .size = undefined, .buffer = undefined, .src = undefined, };
+        var sound: Sound = undefined;
+        sound.id = path;
 
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -148,7 +179,7 @@ const Audio = struct {
 };
 
 fn get_string(s: u32) [:0]const u8 {
-    return std.mem.span(@as([*:0]const u8, @ptrCast(win32.glGetString(s))));
+    return std.mem.span(@as([*:0]const u8, @ptrCast(w32.glGetString(s))));
 }
 
 fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*anyopaque {
@@ -158,19 +189,19 @@ fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*an
         const T = *const fn (entry_point: [*:0]const u8) ?*anyopaque;
 
         // Load >1.1 function
-        if (win32.GetProcAddress(gl_library, "wglGetProcAddress")) |wglGetProcAddress| {
+        if (w32.GetProcAddress(gl_library, "wglGetProcAddress")) |wglGetProcAddress| {
             if (@as(T, @ptrCast(wglGetProcAddress))(entry_point.ptr)) |ptr| {
                 return @constCast(ptr);
             }
         }
 
         // Load <=1.1 function
-        if (win32.GetProcAddress(gl_library, entry_point.ptr)) |ptr| {
+        if (w32.GetProcAddress(gl_library, entry_point.ptr)) |ptr| {
             return @constCast(ptr);
         }
     }
 
-    if (win32.wglGetProcAddress(entry_point.ptr)) |ptr| {
+    if (w32.wglGetProcAddress(entry_point.ptr)) |ptr| {
         return @constCast(ptr);
     }
 
@@ -178,27 +209,30 @@ fn get_proc_address(comptime cxt: @TypeOf(null), entry_point: [:0]const u8) ?*an
 }
 
 pub fn main() !void {
-    _ = win32.CoInitializeEx(null, win32.COINIT_MULTITHREADED);
+    _ = w32.CoInitializeEx(null, w32.COINIT_MULTITHREADED);
+
+    // Playing with audio
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
     var audio = try Audio.init(gpa.allocator());
-    const sound = try audio.load_sound("D:\\projects\\moon\\res\\test.wav");
+    const sound = try audio.load_sound("D:\\projects\\moon\\res\\test_audio.wav");
     defer audio.unload_sound(&sound);
 
-    const wave_format = win32.WAVEFORMATEX {
-        .wFormatTag = win32.WAVE_FORMAT_PCM,
-        .nChannels = 1,
+    // TODO: Load this from file?
+    const wave_format = w32.WAVEFORMATEX {
+        .wFormatTag = w32.WAVE_FORMAT_PCM,
+        .nChannels = 2,
         .nSamplesPerSec = 44100,
         .wBitsPerSample = 16,
-        .nBlockAlign = 2,
-        .nAvgBytesPerSec = 44100 * 2,
+        .nBlockAlign = 4,
+        .nAvgBytesPerSec = 44100 * 4,
         .cbSize = 0,
     };
 
-    const buffer = win32.XAUDIO2_BUFFER {
-        .Flags = win32.XAUDIO2_END_OF_STREAM,
+    const buffer = w32.XAUDIO2_BUFFER {
+        .Flags = w32.XAUDIO2_END_OF_STREAM,
         .AudioBytes = sound.size,
         .pAudioData = @ptrCast(sound.buffer),
         .PlayBegin = 0,
@@ -209,21 +243,21 @@ pub fn main() !void {
         .pContext = null,
     };
 
-    var src: ?*win32.IXAudio2SourceVoice = undefined;
-    _ = win32.IXAudio2.IXAudio2_CreateSourceVoice(audio.xaudio2.?, &src, &wave_format, 0, 1.0, null, null, null);
-    _ = win32.IXAudio2SourceVoice.IXAudio2SourceVoice_SubmitSourceBuffer(src.?, &buffer, null);
-    _ = win32.IXAudio2Voice.IXAudio2Voice_SetVolume(@ptrCast(src.?), 0.1, 0);
-    _ = win32.IXAudio2SourceVoice.IXAudio2SourceVoice_Start(src.?, 0, 0);
+    var src: ?*w32.IXAudio2SourceVoice = undefined;
+    _ = w32.IXAudio2.IXAudio2_CreateSourceVoice(audio.platform.xaudio2.?, &src, &wave_format, 0, 1.0, null, null, null);
+    _ = w32.IXAudio2SourceVoice.IXAudio2SourceVoice_SubmitSourceBuffer(src.?, &buffer, null);
+    _ = w32.IXAudio2Voice.IXAudio2Voice_SetVolume(@ptrCast(src.?), 0.1, 0);
+     _ = w32.IXAudio2SourceVoice.IXAudio2SourceVoice_Start(src.?, 0, 0);
     
     // Window creation
 
-    const module_handle = win32.GetModuleHandleW(null) orelse unreachable;
-    const class_name = win32.L("MOON");
+    const module_handle = w32.GetModuleHandleW(null) orelse unreachable;
+    const class_name = w32.L("MOON");
 
-    const window_class = win32.WNDCLASSEXW{
-        .style = win32.WNDCLASS_STYLES.initFlags(.{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 }),
+    const window_class = w32.WNDCLASSEXW{
+        .style = w32.WNDCLASS_STYLES.initFlags(.{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 }),
         .lpfnWndProc = win32_callback,
-        .cbSize = @sizeOf(win32.WNDCLASSEXW),
+        .cbSize = @sizeOf(w32.WNDCLASSEXW),
         .cbClsExtra = 0,
         .cbWndExtra = @sizeOf(usize),
         .hInstance = @ptrCast(module_handle),
@@ -234,29 +268,29 @@ pub fn main() !void {
         .lpszClassName = class_name,
         .hIconSm = null,
     };
-    if (win32.RegisterClassExW(&window_class) == 0) {
+    if (w32.RegisterClassExW(&window_class) == 0) {
         return error.WindowCreationFailed;
     }
 
-    var rect = win32.RECT{ .left = 0, .top = 0, .right = 800, .bottom = 600 };
-    _ = win32.AdjustWindowRectEx(&rect, win32.WS_OVERLAPPEDWINDOW, 0, @enumFromInt(0));
-    const x = win32.CW_USEDEFAULT;
-    const y = win32.CW_USEDEFAULT;
+    var rect = w32.RECT{ .left = 0, .top = 0, .right = 800, .bottom = 600 };
+    _ = w32.AdjustWindowRectEx(&rect, w32.WS_OVERLAPPEDWINDOW, 0, @enumFromInt(0));
+    const x = w32.CW_USEDEFAULT;
+    const y = w32.CW_USEDEFAULT;
     const w = rect.right - rect.left;
     const h = rect.bottom - rect.top;
 
-    const title = win32.L("Moon");
+    const title = w32.L("Moon");
 
-    const handle = win32.CreateWindowExW(@enumFromInt(0), class_name, title, win32.WS_OVERLAPPEDWINDOW, x, y, w, h, null, null, module_handle, null) 
+    const handle = w32.CreateWindowExW(@enumFromInt(0), class_name, title, w32.WS_OVERLAPPEDWINDOW, x, y, w, h, null, null, module_handle, null) 
         orelse return error.WindowCreationFailed;
 
     // Loading OpenGL
 
-    const pfd = win32.PIXELFORMATDESCRIPTOR{
+    const pfd = w32.PIXELFORMATDESCRIPTOR{
         .nVersion = 1,
-        .nSize = @sizeOf(win32.PIXELFORMATDESCRIPTOR),
-        .dwFlags = win32.PFD_DRAW_TO_WINDOW | win32.PFD_SUPPORT_OPENGL | win32.PFD_DOUBLEBUFFER,
-        .iPixelType = win32.PFD_TYPE_RGBA,
+        .nSize = @sizeOf(w32.PIXELFORMATDESCRIPTOR),
+        .dwFlags = w32.PFD_DRAW_TO_WINDOW | w32.PFD_SUPPORT_OPENGL | w32.PFD_DOUBLEBUFFER,
+        .iPixelType = w32.PFD_TYPE_RGBA,
         .cColorBits = 32,
         .cRedBits = 0,
         .cRedShift = 0,
@@ -274,42 +308,42 @@ pub fn main() !void {
         .cDepthBits = 24,
         .cStencilBits = 8,
         .cAuxBuffers = 0,
-        .iLayerType = win32.PFD_MAIN_PLANE,
+        .iLayerType = w32.PFD_MAIN_PLANE,
         .bReserved = 0,
         .dwLayerMask = 0,
         .dwVisibleMask = 0,
         .dwDamageMask = 0,
     };
 
-    const hdc = win32.GetDC(handle) orelse @panic("Unable to access DC");
-    defer _ = win32.ReleaseDC(handle, hdc);
+    const hdc = w32.GetDC(handle) orelse @panic("Unable to access DC");
+    defer _ = w32.ReleaseDC(handle, hdc);
 
-    const quasi_format = win32.ChoosePixelFormat(hdc, &pfd);
-    _ = win32.SetPixelFormat(hdc, quasi_format, &pfd);
+    const quasi_format = w32.ChoosePixelFormat(hdc, &pfd);
+    _ = w32.SetPixelFormat(hdc, quasi_format, &pfd);
 
-    const quasi_context = win32.wglCreateContext(hdc) orelse @panic("Couldn't create WGL context");
-    _ = win32.wglMakeCurrent(hdc, quasi_context);
-    errdefer _ = win32.wglDeleteContext(quasi_context);
+    const quasi_context = w32.wglCreateContext(hdc) orelse @panic("Couldn't create WGL context");
+    _ = w32.wglMakeCurrent(hdc, quasi_context);
+    errdefer _ = w32.wglDeleteContext(quasi_context);
 
     const wglChoosePixelFormatARB = @as(
         *const fn (
-            hdc: win32.HDC,
+            hdc: w32.HDC,
             piAttribIList: ?[*:0]const c_int,
             pfAttribFList: ?[*:0]const f32,
             nMaxFormats: c_uint,
             piFormats: [*]c_int,
             nNumFormats: *c_uint,
-        ) callconv(WINAPI) win32.BOOL,
-        @ptrCast(win32.wglGetProcAddress("wglChoosePixelFormatARB") orelse return error.InvalidOpenGL),
+        ) callconv(WINAPI) w32.BOOL,
+        @ptrCast(w32.wglGetProcAddress("wglChoosePixelFormatARB") orelse return error.InvalidOpenGL),
     );
 
     const wglCreateContextAttribsARB = @as(
         *const fn (
-            hdc: win32.HDC,
-            hshareContext: ?win32.HGLRC,
+            hdc: w32.HDC,
+            hshareContext: ?w32.HGLRC,
             attribList: ?[*:0]const c_int,
-        ) callconv(WINAPI) ?win32.HGLRC,
-        @ptrCast(win32.wglGetProcAddress("wglCreateContextAttribsARB") orelse return error.InvalidOpenGL),
+        ) callconv(WINAPI) ?w32.HGLRC,
+        @ptrCast(w32.wglGetProcAddress("wglCreateContextAttribsARB") orelse return error.InvalidOpenGL),
     );
 
     const pfd_attributes = [_:0]c_int{
@@ -342,16 +376,16 @@ pub fn main() !void {
     };
 
     const context = wglCreateContextAttribsARB(hdc, null, &context_attributes) orelse return error.InvalidOpenGL;
-    errdefer _ = win32.wglDeleteContext(context);
+    errdefer _ = w32.wglDeleteContext(context);
 
-    if (win32.wglMakeCurrent(hdc, context) == 0) {
+    if (w32.wglMakeCurrent(hdc, context) == 0) {
         return error.InvalidOpenGL;
     }
 
-    gl_library = win32.LoadLibraryW(win32.L("opengl32.dll")) orelse @panic("Can't find opengl32.dll");
+    gl_library = w32.LoadLibraryW(w32.L("opengl32.dll")) orelse @panic("Can't find opengl32.dll");
     try gl.load(null, get_proc_address);
 
-    _ = win32.ShowWindow(handle, win32.SW_SHOW);
+    _ = w32.ShowWindow(handle, w32.SW_SHOW);
 
     // Playing with OpenGL
 
@@ -432,13 +466,13 @@ pub fn main() !void {
 
     var running = true;
     while (running) {
-        var msg: win32.MSG = undefined;
-        while (win32.PeekMessageW(&msg, null, 0, 0, win32.PM_REMOVE) != 0) {
-            if (msg.message == win32.WM_QUIT) {
+        var msg: w32.MSG = undefined;
+        while (w32.PeekMessageW(&msg, null, 0, 0, w32.PM_REMOVE) != 0) {
+            if (msg.message == w32.WM_QUIT) {
                 running = false;
             } else {
-                _ = win32.TranslateMessage(&msg);
-                _ = win32.DispatchMessageW(&msg);
+                _ = w32.TranslateMessage(&msg);
+                _ = w32.DispatchMessageW(&msg);
             }
         }
 
@@ -450,20 +484,20 @@ pub fn main() !void {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
         // TODO: Change this to the WGL extension version (probably)
-        _ = win32.SwapBuffers(hdc);
+        _ = w32.SwapBuffers(hdc);
     }
 }
 
-fn win32_callback(hwnd: win32.HWND, uMsg: u32, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(WINAPI) win32.LRESULT {
-    var result: win32.LRESULT = 0;
+fn win32_callback(hwnd: w32.HWND, uMsg: u32, wParam: w32.WPARAM, lParam: w32.LPARAM) callconv(WINAPI) w32.LRESULT {
+    var result: w32.LRESULT = 0;
 
     switch (uMsg) {
-        win32.WM_CLOSE, win32.WM_DESTROY => {
-            win32.PostQuitMessage(0);
+        w32.WM_CLOSE, w32.WM_DESTROY => {
+            w32.PostQuitMessage(0);
         },
 
         else => {
-            result = win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+            result = w32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
         },
     }
 
