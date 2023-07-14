@@ -71,50 +71,13 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    // TODO: Load this from file?
-    const wformat = aio.WAVEFormat {
-        .channels = 2,
-        .samples_per_second = 44100,
-        .bits_per_sample = 16,
-        .block_align = 4,
-    };
-
-    var audio = try aio.AudioEngine.init(gpa.allocator(), wformat);
+    var audio = aio.AudioEngine.init(gpa.allocator());
     defer audio.deinit();
 
     const sound_path = "D:\\projects\\moon\\res\\test_audio.wav";
-    _ = try audio.load_sound(sound_path);
-    defer audio.unload_sound(sound_path);
+    const sound_handle = audio.load_sound(sound_path);
 
-    // TODO: Move channel handling into the audio engine
-    var channel = aio.Channel {
-        .sound_id = sound_path,
-        .platform = aio.Win32Channel {
-            .source = undefined,
-            .buffer = w32.XAUDIO2_BUFFER{
-                .Flags = w32.XAUDIO2_END_OF_STREAM,
-                .AudioBytes = 0,
-                .pAudioData = null,
-                .PlayBegin = 0,
-                .PlayLength = 0,
-                .LoopBegin = 0,
-                .LoopLength = 0,
-                .LoopCount = 0,
-                .pContext = null,
-            },
-        },
-    };
-
-    _ = w32.IXAudio2.IXAudio2_CreateSourceVoice(
-        audio.platform.xaudio2.?, 
-        &channel.platform.source, 
-        &audio.platform.format, 
-        0, 
-        1.0, 
-        null, 
-        null, 
-        null);
-    audio.play_sound(sound_path, &channel);
+    audio.play_sound(sound_handle);
 
     // Window creation
 
